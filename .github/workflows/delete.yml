@@ -1,0 +1,16 @@
+name: Docker Delete API M
+
+on:
+  workflow_dispatch:
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    container:
+      image: integrational/anypoint-cli:3.0.0
+    steps:
+         - name: Delete
+           run: |
+             instanceID=$(anypoint-cli --username=${{ secrets.USERNAME }} --password=${{ secrets.PASSWORD }} --environment=[AQUI_TU_ENV] --organization=[AQUI_TU_ORG]  api-mgr api list -o json -f "Instance ID")
+             id=$(echo $instanceID | cut -c 20-27)
+             anypoint-cli --username=${{ secrets.USERNAME }} --password=${{ secrets.PASSWORD }} --environment=[AQUI_TU_ENV] --organization=[AQUI_TU_ORG]  api-mgr api delete $id

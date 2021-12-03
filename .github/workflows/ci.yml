@@ -1,0 +1,183 @@
+name: CI Mule Maven
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ develop ]
+  workflow_dispatch:
+
+jobs:
+ 
+  compile_test_build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    
+    - name: Checkout
+      uses: actions/checkout@v2 
+
+    - name: Set up Cache
+      uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: | 
+          ${{ runner.os }}-maven-
+          
+    - name: Set up JDK 1.8
+      uses: actions/setup-java@v1
+      with:
+        java-version: 1.8
+    
+    - name: Set Up settings.xml
+      uses: whelk-io/maven-settings-xml-action@v20
+      with:
+        repositories: >
+          [
+            {
+              "id": "mulesoft-releases",
+              "name": "MuleSoft Repository",
+              "url": "http://repository.mulesoft.org/releases/",
+              "layout": "default"
+            },
+            {
+              "id": "mulesoft-snapshots",
+              "name": "MuleSoft Snapshot Repository",
+              "url": "http://repository.mulesoft.org/snapshots/",
+              "layout": "default"
+            },
+            {
+              "id": "mulesoft-public",
+              "name": "MuleSoft Public Repository",
+              "url": "https://repository.mulesoft.org/nexus/content/repositories/public/",
+              "layout": "default"
+            },
+            {
+              "id": "MuleRepository",
+              "name": "MuleRepository",
+              "url": "https://repository.mulesoft.org/nexus-ee/content/repositories/releases-ee/",
+              "layout": "default"
+            }  
+          ]
+        servers: >
+          [
+            {
+              "id": "anypoint-exchange-v2", 
+              "username": "${{ secrets.USERNAME }}", 
+              "password": "${{ secrets.PASSWORD }}"
+            },
+            {
+              "id": "mule-enterprise", 
+              "username": "${{ secrets.NEXUS_MULE_USERNAME }}",
+              "password": "${{ secrets.NEXUS_MULE_PASSWORD }}"
+            },
+            {
+              "id": "MuleRepository", 
+              "username": "${{ secrets.NEXUS_MULE_USERNAME }}",
+              "password": "${{ secrets.NEXUS_MULE_PASSWORD }}"
+            }
+           ]   
+      
+        plugin_groups: >
+          [
+            "org.mule.tools"
+          ]
+
+
+    #- name: Print effective-settings (optional)
+    #  run: mvn help:effective-settings
+
+
+    - name: Compile
+      run: mvn -B compile
+      
+    - name: Test
+      run: mvn -B test -DautodiscoveryId=123
+    
+    - name: Package
+      run: mvn -B package -DskipTests=true -DautodiscoveryId=123 
+      
+    - name: Rename artifact with commit
+      run: |
+        artifactName=$(ls target/*.jar | head -1)
+        commitHash=$(git rev-parse --short "$GITHUB_SHA")
+        newArtifactName=$(ls target/*.jar | head -1 | sed "s/.jar/-$commitHash.jar/g")
+        mv $artifactName $newArtifactName
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@master
+      with:
+        name: artifacts
+        path: target/*.jar
+  
+  deploy:
+    needs: compile_test_build
+    runs-on: ubuntu-latest
+    
+    steps:
+    
+      - name: Checkout
+        uses: actions/checkout@v2
+            
+      - name: Download artifact
+        uses: actions/download-artifact@master
+        with:
+          name: artifacts
+      
+      - name: Set up python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+          
+      - name: Create API and get AutodiscoveryId 
+        env:
+          ORG_ID: '[AQUI_TU_GRUP_ID]'
+          DEV_ID: '[AQUI_TU_DEV_ID]'
+          ASSET_ID: 'ci-cd-vlc-mulesoft-meetup'
+          VERSION: '1.0.0'
+        run: |
+          pip install requests
+          autodiscoveryId="$(python .github/workflows/api.py ${{ secrets.USERNAME }} ${{ secrets.PASSWORD }} $ORG_ID $DEV_ID $ASSET_ID $VERSION)"
+          echo $autodiscoveryId 
+          echo "AUTODISCOVERY_ID=$autodiscoveryId" >> $GITHUB_ENV
+          
+      - name: Set up Cache
+        uses: actions/cache@v1
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: | 
+            ${{ runner.os }}-maven-    
+          
+      - name: Deploy to Dev
+        env:
+          USERNAME: ${{ secrets.USERNAME }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          CLIENT_ID: ${{ secrets.DEV_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DEV_CLIENT_SECRET }}
+        run: |
+          echo ${{ env.AUTODISCOVERY_ID }}
+          artifactName=$(ls *.jar | head -1) 
+          mvn deploy -DmuleDeploy \
+            -Dartifact=$artifactName \
+            -DapplicationName=$artifactName \
+            -Dusername=$USERNAME \
+            -Dpassword=$PASSWORD \
+            -DautodiscoveryId=${{ env.AUTODISCOVERY_ID }} \
+            -Danypoint.platform.client_id=$CLIENT_ID \
+            -Danypoint.platform.client_secret=$CLIENT_SECRET \
+            -Denv=[AQUI_TU_ENTORNO] \
+            -DskipTests \
+            
+               
+      - name: Slack Notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_CHANNEL: mulesoft
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_ICON: https://github.com/rtCamp.png?size=48
+          SLACK_MESSAGE: 'Post Content :rocket:'
+          SLACK_TITLE: Deployed in Dev
+          SLACK_USERNAME: GithubActions
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
